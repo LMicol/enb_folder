@@ -35,18 +35,25 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <openair1/PHY/TOOLS/tools_defs.h>
+#include "record_player.h"
 
-/* name of shared library implementing the radio front end */
+/* default name of shared library implementing the radio front end */
 #define OAI_RF_LIBNAME        "oai_device"
 /* name of shared library implementing the transport */
 #define OAI_TP_LIBNAME        "oai_transpro"
-/* name of shared library implementing the basic/rf simulator */
-#define OAI_RFSIM_LIBNAME        "rfsimulator"
-/* name of shared library implementing the basic/rf simulator */
-#define OAI_BASICSIM_LIBNAME        "tcp_bridge_oai"
+/* name of shared library implementing the rf simulator */
+#define OAI_RFSIM_LIBNAME     "rfsimulator"
+/* name of shared library implementing the basic simulator */
+#define OAI_BASICSIM_LIBNAME  "tcp_bridge_oai"
+/* name of shared library implementing the iq player */
+#define OAI_IQPLAYER_LIBNAME  "oai_iqplayer"
+
 /* flags for BBU to determine whether the attached radio head is local or remote */
 #define RAU_LOCAL_RADIO_HEAD  0
 #define RAU_REMOTE_RADIO_HEAD 1
+
+#define MAX_WRITE_THREAD_PACKAGE     10
+#define MAX_WRITE_THREAD_BUFFER_SIZE 8
 
 #ifndef MAX_CARDS
   #define MAX_CARDS 8
@@ -56,13 +63,8 @@ typedef int64_t openair0_timestamp;
 typedef volatile int64_t openair0_vtimestamp;
 
 
-/*!\brief structrue holds the parameters to configure USRP devices*/
+/*!\brief structure holds the parameters to configure USRP devices*/
 typedef struct openair0_device_t openair0_device;
-
-
-
-
-
 
 //#define USRP_GAIN_OFFSET (56.0)  // 86 calibrated for USRP B210 @ 2.6 GHz to get equivalent RS EPRE in OAI to SMBV100 output
 
@@ -70,13 +72,9 @@ typedef enum {
   max_gain=0,med_gain,byp_gain
 } rx_gain_t;
 
-#if OCP_FRAMEWORK
-#include <enums.h>
-#else
 typedef enum {
   duplex_mode_TDD=1,duplex_mode_FDD=0
 } duplex_mode_t;
-#endif
 
 
 /** @addtogroup _GENERIC_PHY_RF_INTERFACE_
@@ -105,9 +103,8 @@ typedef enum {
   /*!\brief device is UEDv2 */
   UEDv2_DEV,
   MAX_RF_DEV_TYPE
-
 } dev_type_t;
-
+#define DEVTYPE_NAMES {"","EXMIMO","USRP B200","USRP X300","BLADERF","LMSSDR","IRIS","No HW","ADRV9371_ZC706","UEDv2"} 
 /*!\brief transport protocol types
  */
 typedef enum {
@@ -117,7 +114,6 @@ typedef enum {
   /*!\brief no transport protocol*/
   NONE_TP,
   MAX_TRANSP_TYPE
-
 } transport_type_t;
 
 
@@ -129,7 +125,6 @@ typedef enum {
   /*!\brief device functions within a RRU */
   RRU_HOST,
   MAX_HOST_TYPE
-
 } host_type_t;
 
 
@@ -143,6 +138,8 @@ typedef struct {
 
 /*! \brief Clock source types */
 typedef enum {
+  //! this means the paramter has not been set
+  unset=-1,
   //! This tells the underlying hardware to use the internal reference
   internal=0,
   //! This tells the underlying hardware to use the external reference
@@ -150,6 +147,7 @@ typedef enum {
   //! This tells the underlying hardware to use the gpsdo reference
   gpsdo=2
 } clock_source_t;
+
 
 /*! \brief RF frontend parameters set by application */
 typedef struct {
@@ -188,7 +186,6 @@ typedef struct {
   //! \brief memory
   //! \brief Pointer to Calibration table for RX gains
   rx_gain_calib_table_t *rx_gain_calib_table;
-
   //! mode for rxgain (ExpressMIMO2)
   rx_gain_t rxg_mode[4];
   //! \brief Gain for RX in dB.
@@ -208,6 +205,7 @@ typedef struct {
   //! timing_source
   clock_source_t time_source;
   //! Manual SDR IP address
+  //#if defined(EXMIMO) || defined(OAI_USRP) || defined(OAI_BLADERF) || defined(OAI_LMSSDR)
   char *sdr_addrs;
   //! Auto calibration flag
   int autocal[4];
@@ -217,15 +215,25 @@ typedef struct {
   int iq_rxrescale;
   //! Configuration file for LMS7002M
   char *configFilename;
-#if defined(USRP_REC_PLAY)
-  unsigned short sf_mode;           // 1=record, 2=replay
-  char           sf_filename[1024]; // subframes file path
-  unsigned int   sf_max;            // max number of recorded subframes
-  unsigned int   sf_loops;          // number of loops in replay mode
-  unsigned int   sf_read_delay;     // read delay in replay mode
-  unsigned int   sf_write_delay;    // write delay in replay mode
-  unsigned int   eth_mtu;           // ethernet MTU
-#endif
+  //! remote IP/MAC addr for Ethernet interface
+  char *remote_addr;
+  //! remote port number for Ethernet interface
+  unsigned int remote_port;
+  //! local IP/MAC addr for Ethernet interface (eNB/BBU, UE)
+  char *my_addr;
+  //! local port number for Ethernet interface (eNB/BBU, UE)
+  unsigned int my_port;
+  //! record player configuration, definition in record_player.h
+  uint32_t       recplay_mode;
+  recplay_conf_t *recplay_conf;
+  //! number of samples per tti
+  unsigned int  samples_per_tti;
+  //! the sample rate for receive.
+  double rx_sample_rate;
+  //! the sample rate for transmit.
+  double tx_sample_rate;
+  //! check for threequarter sampling rate
+  int8_t threequarter_fs;
 } openair0_config_t;
 
 /*! \brief RF mapping */
@@ -257,7 +265,6 @@ typedef struct {
   uint8_t if_compress;
 } eth_params_t;
 
-
 typedef struct {
   //! Tx buffer for if device, keep one per subframe now to allow multithreading
   void *tx[10];
@@ -267,9 +274,37 @@ typedef struct {
   void *rx;
 } if_buffer_t;
 
+typedef struct {
+  openair0_timestamp timestamp;
+  void *buff[MAX_WRITE_THREAD_BUFFER_SIZE];// buffer to be write;
+  int nsamps;
+  int cc;
+  signed char first_packet;
+  signed char last_packet;
+  int flags_msb;
+} openair0_write_package_t;
+
+typedef struct {
+  openair0_write_package_t write_package[MAX_WRITE_THREAD_PACKAGE];
+  int start;
+  int end;
+  /// \internal This variable is protected by \ref mutex_write
+  int count_write;
+  /// pthread struct for trx write thread
+  pthread_t pthread_write;
+  /// pthread attributes for trx write thread
+  pthread_attr_t attr_write;
+  /// condition varible for trx write thread
+  pthread_cond_t cond_write;
+  /// mutex for trx write thread
+  pthread_mutex_t mutex_write;
+} openair0_thread_t;
 
 /*!\brief structure holds the parameters to configure USRP devices */
 struct openair0_device_t {
+  /*!tx write thread*/
+  openair0_thread_t write_thread;
+
   /*!brief Module ID of this device */
   int Mod_id;
 
@@ -279,7 +314,7 @@ struct openair0_device_t {
   /*!brief Type of this device */
   dev_type_t type;
 
-  /*!brief Transport protocol type that the device suppports (in case I/Q samples need to be transported) */
+  /*!brief Transport protocol type that the device supports (in case I/Q samples need to be transported) */
   transport_type_t transp_type;
 
   /*!brief Type of the device's host (RAU/RRU) */
@@ -290,7 +325,8 @@ struct openair0_device_t {
 
   /* !brief ETH params set by application */
   eth_params_t *eth_params;
-
+  //! record player data, definition in record_player.h
+  recplay_state_t *recplay_state;
   /* !brief Indicates if device already initialized */
   int is_init;
 
@@ -392,6 +428,12 @@ struct openair0_device_t {
    * \param arg pointer to capabilities or configuration
    */
   void (*configure_rru)(int idx, void *arg);
+
+  /*! \brief RRU Configuration callback
+   * \param idx RU index
+   * \param arg pointer to capabilities or configuration
+   */
+  int (*trx_write_init)(openair0_device *device);
 };
 
 /* type of device init function, implemented in shared lib */
@@ -423,12 +465,43 @@ typedef struct {
   uint32_t option_flag;    // Option flag
 } samplesBlockHeader_t;
 
+#define UE_MAGICDL_FDD 0xA5A5A5A5A5A5A5A5  // UE DL FDD record
+#define UE_MAGICUL_FDD 0x5A5A5A5A5A5A5A5A  // UE UL FDD record
+#define UE_MAGICDL_TDD 0xA6A6A6A6A6A6A6A6  // UE DL TDD record
+#define UE_MAGICUL_TDD 0x6A6A6A6A6A6A6A6A  // UE UL TDD record
+
+#define ENB_MAGICDL_FDD 0xB5B5B5B5B5B5B5B5  // eNB DL FDD record
+#define ENB_MAGICUL_FDD 0x5B5B5B5B5B5B5B5B  // eNB UL FDD record
+#define ENB_MAGICDL_TDD 0xB6B6B6B6B6B6B6B6  // eNB DL TDD record
+#define ENB_MAGICUL_TDD 0x6B6B6B6B6B6B6B6B  // eNB UL TDD record
+
+#define OPTION_LZ4  0x00000001          // LZ4 compression (option_value is set to compressed size)
+
+
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
 
+#define  DEVICE_SECTION   "device"
+#define  CONFIG_HLP_DEVICE  "Identifies the oai device (the interface to RF) to use, the shared lib \"lib_<name>.so\" will be loaded"
+
+#define  CONFIG_DEVICEOPT_NAME "name"
+
+/* inclusion for device configuration */
+/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+/*                                            config parameters for oai device                                                                                               */
+/*   optname                     helpstr                paramflags                      XXXptr                  defXXXval                            type           numelt   */
+/*---------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+#define DEVICE_PARAMS_DESC {\
+    { CONFIG_DEVICEOPT_NAME,      CONFIG_HLP_DEVICE,          0,                strptr:&devname,                 defstrval:NULL,         TYPE_STRING,     0}\
+}
+
+
+
+/*! \brief get device name from device type */
+char *get_devname(int devtype);
 /*! \brief Initialize openair RF target. It returns 0 if OK */
 int openair0_device_load(openair0_device *device, openair0_config_t *openair0_cfg);
 /*! \brief Initialize transport protocol . It returns 0 if OK */
@@ -446,8 +519,16 @@ openair0_timestamp get_usrp_time(openair0_device *device);
  * \returns 0 in success
  */
 int openair0_set_rx_frequencies(openair0_device *device, openair0_config_t *openair0_cfg);
+/*! \brief read the iq record/player configuration */
+extern int read_recplayconfig(recplay_conf_t **recplay_conf, recplay_state_t **recplay_state);
+/*! \brief store recorded iqs from memory to file. */
+extern void iqrecorder_end(openair0_device *device);
 
+
+#define gettid() syscall(__NR_gettid)
 /*@}*/
+
+
 
 #ifdef __cplusplus
 }

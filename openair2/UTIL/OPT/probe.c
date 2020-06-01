@@ -92,14 +92,15 @@ what about the implementation
 #include <stdint.h>
 #include "common/config/config_userapi.h"
 #include "opt.h"
+#include "common/utils/system.h"
 
 int opt_enabled=0;
 
 //static unsigned char g_PDUBuffer[1600];
 //static unsigned int g_PDUOffset;
 
-static char *in_ip;
-static char *in_path;
+static char in_ip[128]={0};
+static char in_path[128]={0};
 FILE *file_fd = NULL;
 pcap_hdr_t file_header = {
   0xa1b2c3d4,   /* magic number */
@@ -196,15 +197,7 @@ int opt_create_listener_socket(char *ip_address, uint16_t port) {
     return -1;
   }
 
-  ret = pthread_create(&opt_listener.thread, NULL, opt_listener_thread, NULL);
-
-  if (ret != 0) {
-    LOG_E(OPT, "Failed to create thread for server socket: %s\n", strerror(errno));
-    opt_type = OPT_NONE;
-    close(opt_listener.sd);
-    opt_listener.sd = -1;
-    return -1;
-  }
+  threadCreate(&opt_listener.thread, opt_listener_thread, NULL, "flexran", -1, OAI_PRIORITY_RT_LOW);
 
   return 0;
 }
@@ -341,7 +334,9 @@ static void SendFrame(guint8 radioType, guint8 direction, guint8 rntiType,
 
 /* Write an individual PDU (PCAP packet header + mac-context + mac-pdu) */
 static int MAC_LTE_PCAP_WritePDU(MAC_Context_Info_t *context,
-                                 const uint8_t *PDU, unsigned int length) {
+                                 const uint8_t *PDU,
+                                 unsigned int length)
+{
   pcaprec_hdr_t packet_header;
   uint8_t context_header[256];
   int offset = 0;
@@ -386,6 +381,7 @@ static int MAC_LTE_PCAP_WritePDU(MAC_Context_Info_t *context,
   fwrite(PDU, 1, length, file_fd);
   return 1;
 }
+
 #include <common/ran_context.h>
 extern RAN_CONTEXT_t RC;
 #include <openair1/PHY/phy_extern_ue.h>
@@ -446,14 +442,16 @@ void trace_pdu_implementation(int direction, uint8_t *pdu_buffer, unsigned int p
   }
 }
 /*---------------------------------------------------*/
-int init_opt(void) {
+int init_opt(void)
+{
   char *in_type=NULL;
   paramdef_t opt_params[]          = OPT_PARAMS_DESC ;
   checkedparam_t opt_checkParams[] = OPTPARAMS_CHECK_DESC;
-  uint16_t in_port;
+  uint16_t in_port=0;
   config_set_checkfunctions(opt_params, opt_checkParams,
                             sizeof(opt_params)/sizeof(paramdef_t));
   config_get( opt_params,sizeof(opt_params)/sizeof(paramdef_t),OPT_CONFIGPREFIX);
+
   subframesSinceCaptureStart = 0;
   int tmptype = config_get_processedint( &(opt_params[OPTTYPE_IDX]));
 
@@ -533,6 +531,7 @@ int init_opt(void) {
   // memset(mac_info, 0, sizeof(mac_lte_info)+pdu_buffer_size + 8);
   return (1);
 }
+
 void terminate_opt(void) {
   /* Close local socket */
   //  free(mac_info);

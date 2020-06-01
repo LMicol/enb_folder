@@ -47,3 +47,11 @@ MESSAGE_DEF(X2AP_HANDOVER_CANCEL                , MESSAGE_PRIORITY_MED, x2ap_han
 
 /* handover messages X2AP <-> S1AP */
 MESSAGE_DEF(X2AP_UE_CONTEXT_RELEASE             , MESSAGE_PRIORITY_MED, x2ap_ue_context_release_t        , x2ap_ue_context_release)
+
+/*Senb bearer addition messages X2AP <-> RRC */
+MESSAGE_DEF(X2AP_SENB_ADDITION_REQ              , MESSAGE_PRIORITY_MED, x2ap_senb_addition_req_t         , x2ap_senb_addition_req)
+
+/*SGnb bearer addition messages X2AP <-> RRC */
+MESSAGE_DEF(X2AP_ENDC_SGNB_ADDITION_REQ              , MESSAGE_PRIORITY_MED, x2ap_ENDC_sgnb_addition_req_t         , x2ap_ENDC_sgnb_addition_req)
+MESSAGE_DEF(X2AP_ENDC_SGNB_ADDITION_REQ_ACK              , MESSAGE_PRIORITY_MED, x2ap_ENDC_sgnb_addition_req_ACK_t         , x2ap_ENDC_sgnb_addition_req_ACK)
+MESSAGE_DEF(X2AP_ENDC_SGNB_RECONF_COMPLETE              , MESSAGE_PRIORITY_MED, x2ap_ENDC_reconf_complete_t         , x2ap_ENDC_sgnb_reconf_complete)
